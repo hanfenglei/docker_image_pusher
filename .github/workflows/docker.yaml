@@ -15,53 +15,57 @@ jobs:
     name: Pull and Push Images
     runs-on: ubuntu-latest
     steps:
-    - name: Before freeing up disk space
-      run: |
-        echo "Before freeing up disk space"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
+      - name: Before freeing up disk space
+        run: |
+          echo "Before freeing up disk space"
+          echo "=============================================================================="
+          df -hT
+          echo "=============================================================================="
 
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@master
-      with:
-        root-reserve-mb: 2048
-        swap-size-mb: 128
-        remove-dotnet: 'true'
-        remove-haskell: 'true'
-        build-mount-path: '/var/lib/docker/'
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 128
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          build-mount-path: '/var/lib/docker/'
 
-    - name: Restart docker
-      run: sudo service docker restart
+      - name: Restart docker
+        run: sudo service docker restart
 
-    - name: Free up disk space complete
-      run: |
-        echo "Free up disk space complete"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
+      - name: Free up disk space complete
+        run: |
+          echo "Free up disk space complete"
+          echo "=============================================================================="
+          df -hT
+          echo "=============================================================================="
 
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Docker Setup Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Docker Setup Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Build and push image Aliyun
-      run: |
-        ALIYUN_REGISTRY="crpi-abzucwabjqzgkyo.cn-beijing.personal.cr.aliyuncs.com"
-        ALIYUN_REPO="han-devops/devops"
+      - name: Build and push image Aliyun
+        run: |
+          ALIYUN_REGISTRY="crpi-abzucwabjq1zgkyo.cn-beijing.personal.cr.aliyuncs.com"
+          ALIYUN_REPO="han-devops/devops"
 
-        docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
+          docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
 
-        # 预处理，判断镜像是否重名
-        declare -A duplicate_images
-        declare -A temp_map
-        while IFS= read -r line || [ -n "$line" ]; do
-            [[ -z "$line" ]] && continue
-            [[ "$line" =~ ^\s*# ]] && continue
+          declare -A duplicate_images
+          declare -A temp_map
 
-            image=$(echo "$line" | awk '{print $NF}')
+          # 预处理判断重名
+          while IFS= read -r line || [ -n "$line" ]; do
+            line_trimmed=$(echo "$line" | xargs)
+            [ -z "$line_trimmed" ] && continue
+            case "$line_trimmed" in
+              \#*) continue ;;
+            esac
+
+            image=$(echo "$line_trimmed" | awk '{print $NF}')
             image="${image%%@*}"
             image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
             name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
@@ -69,63 +73,63 @@ jobs:
             image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
 
             if [[ -n "${temp_map[$image_name]}" ]]; then
-                if [[ "${temp_map[$image_name]}" != $name_space ]]; then
-                    duplicate_images[$image_name]="true"
-                fi
+              if [[ "${temp_map[$image_name]}" != "$name_space" ]]; then
+                duplicate_images[$image_name]="true"
+              fi
             else
-                temp_map[$image_name]=$name_space
+              temp_map[$image_name]=$name_space
             fi
-        done < images.txt
+          done < images.txt
 
-        # 拉取、重命名并推送镜像
-        while IFS= read -r line || [ -n "$line" ]; do
-            [[ -z "$line" ]] && continue
-            [[ "$line" =~ ^\s*# ]] && continue
+          # 拉取、重命名并推送
+          while IFS= read -r line || [ -n "$line" ]; do
+            line_trimmed=$(echo "$line" | xargs)
+            [ -z "$line_trimmed" ] && continue
+            case "$line_trimmed" in
+              \#*) continue ;;
+            esac
 
-            echo "docker pull $line"
-            docker pull $line
+            echo "docker pull $line_trimmed"
+            docker pull "$line_trimmed"
 
             # 提取平台信息
-            platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
+            platform=$(echo "$line_trimmed" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
             if [ -z "$platform" ]; then
-                platform_prefix=""
+              platform_prefix=""
             else
-                platform_prefix="${platform//\//_}"
+              platform_prefix="${platform//\//_}"
             fi
 
-            image=$(echo "$line" | awk '{print $NF}')
+            image=$(echo "$line_trimmed" | awk '{print $NF}')
             image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
             name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
             image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
 
             name_space_prefix=""
             if [[ -n "${duplicate_images[$image_name]}" && -n "$name_space" ]]; then
-                name_space_prefix="${name_space}_"
+              name_space_prefix="${name_space}_"
             fi
 
-            # 生成 tag: / -> -- , : -> ---- , platform在最后用 ------ 连接
+            # tag规则: / -> -- , : -> ---- , platform在最后用 ------ 连接
             sanitized_tag=$(echo "$image" | sed 's/\//--/g; s/:/----/g')
-            if [ -n "$platform_prefix" ]; then
-                sanitized_tag="${sanitized_tag}------${platform_prefix}"
-            fi
+            [ -n "$platform_prefix" ] && sanitized_tag="${sanitized_tag}------${platform_prefix}"
 
             # 固定仓库
-            # new_image="$ALIYUN_REGISTRY/$ALIYUN_REPO/${name_space_prefix}${sanitized_tag}"
-			new_image="crpi-abzucwabjq1zgkyo.cn-beijing.personal.cr.aliyuncs.com/han-devops/devops:${sanitized_tag}"
+            new_image="$ALIYUN_REGISTRY/$ALIYUN_REPO:${sanitized_tag}"
+
             echo "docker tag $image $new_image"
-            docker tag $image $new_image
+            docker tag "$image" "$new_image"
             echo "docker push $new_image"
-            docker push $new_image
+            docker push "$new_image"
 
             # 清理磁盘
             echo "开始清理磁盘空间"
             echo "=============================================================================="
             df -hT
             echo "=============================================================================="
-            docker rmi $image
-            docker rmi $new_image
+            docker rmi "$image" "$new_image"
             echo "磁盘空间清理完毕"
             echo "=============================================================================="
             df -hT
             echo "=============================================================================="
-        done < images.txt
+          done < images.txt
